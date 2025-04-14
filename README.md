@@ -10,7 +10,7 @@ Since around macOS 14.5, the XNU kernel has been modified to disallow the usage 
 
 First, install the KextRW kernel extension from https://github.com/BlueFalconHD/KextRW and run the tests. After you confirm those are working, use `make install_lib` there to install libkextrw to the system.
 
-Additionally, you must install the Capstone disassembly framework. You can do this using `brew install capstone` and then `brew link capstone`.
+Additionally, you must install the Capstone disassembly framework. You can do this using `brew install capstone`.
 
 ### Finding the correct offset
 
