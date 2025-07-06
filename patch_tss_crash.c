@@ -2,102 +2,128 @@
 
 #include <capstone.h>
 #include <libkextrw.h>
+
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 #define SUB_THREAD_SET_STATE_INTERNAL kslide(0xFFFFFE0008859D2C)
-#define SUB_THREAD_SET_STATE_INTERNAL_TBNZ_ENTITLEMENT_CHECK_OFFSET 0x44
+#define OFFSET_TBNZ_ENTITLEMENT_CHECK 0x44 /* TBNZ  W6,#9  */
+#define OFFSET_TBZ_THREAD_FLAG 0x4C        /* TBZ   W8,#31 */
+
+#define ARM64_NOP 0xD503201F /* official NOP */
+
+/* ----------------------------------------------------------- */
+
+static bool patch_tbnz_to_nop(csh handle, uint64_t pc) {
+  printf("🔍 Patching TBNZ to NOP at 0x%llx\n", pc);
+
+  uint32_t original = kread32(pc);
+
+  cs_insn *insn = NULL;
+  size_t n = cs_disasm(handle, (uint8_t *)&original, 4, pc, 1, &insn);
+  if (n != 1 || insn[0].id != ARM64_INS_TBNZ) {
+    printf("    ❌ Expected TBNZ at 0x%llx, found “%s”\n", pc,
+           n ? insn[0].mnemonic : "???");
+    cs_free(insn, n);
+    return false;
+  }
+
+  printf("    🌀 Patching TBNZ @0x%llx => NOP\n", pc);
+  kwrite32(pc, ARM64_NOP);
+
+  bool ok = (kread32(pc) == ARM64_NOP);
+  puts(ok ? "    😎 Patch OK" : "    ❌ Verification failed");
+  cs_free(insn, n);
+  return ok;
+}
+
+static bool patch_tbz_to_b(csh handle, uint64_t pc) {
+  printf("🔍 Patching TBZ to B at 0x%llx\n", pc);
+
+  uint32_t original = kread32(pc);
+
+  cs_insn *insn = NULL;
+  size_t n = cs_disasm(handle, (uint8_t *)&original, 4, pc, 1, &insn);
+  if (n != 1 || insn[0].id != ARM64_INS_TBZ) {
+    printf("     ❌ Expected TBZ at 0x%llx, found “%s”\n", pc,
+           n ? insn[0].mnemonic : "???");
+    cs_free(insn, n);
+    return false;
+  }
+
+  const cs_arm64 *a64 = &insn[0].detail->arm64;
+  if (a64->op_count < 3 || a64->operands[2].type != ARM64_OP_IMM) {
+    puts("    ❌ Capstone did not supply a branch target");
+    cs_free(insn, n);
+    return false;
+  }
+
+  uint64_t target = (uint64_t)a64->operands[2].imm;
+  int64_t offset = (int64_t)target - (int64_t)pc;
+  if (offset & 3) {
+    printf("    ❌ Target 0x%llx is not word-aligned\n", target);
+    cs_free(insn, n);
+    return false;
+  }
+
+  uint32_t imm26 = ((uint32_t)(offset >> 2)) & 0x03FFFFFF;
+  uint32_t branch = (0b000101u << 26) | imm26; /* B target */
+
+  printf("    🌀 Patching TBZ @0x%llx => B 0x%llx (0x%08x)\n", pc, target,
+         branch);
+
+  kwrite32(pc, branch);
+  bool ok = (kread32(pc) == branch);
+  puts(ok ? "    😎 Patch OK" : "    ❌ Verification failed");
+  cs_free(insn, n);
+  return ok;
+}
 
 int main(void) {
-
-  // Show confirmation message that requires user input
-  printf(
-      "This program will patch the kernel in memory. ARE YOU SURE THE OFFSETS "
-      "ARE CORRECT? Note that the patch is not permanent and will not persist "
-      "upon reboots. (y/n): ");
-  char response;
-  scanf(" %c", &response);
-  if (response != 'y' && response != 'Y') {
-    printf("Operation cancelled.\n");
+  printf("thread_set_state entitlement bypass\n"
+         "Changes vanish on reboot. Proceed?  (y/N): ");
+  char reply = 0;
+  scanf(" %c", &reply);
+  if (reply != 'y' && reply != 'Y') {
+    puts("📭 Cancelled.");
     return 0;
   }
 
   if (kextrw_init() == -1) {
-    printf("Failed to initialize KextRW\n");
+    puts("❌ KextRW init failed");
     return 1;
   }
 
-  uint64_t kernelBase = get_kernel_base();
-  if (kernelBase == 0) {
-    printf("Failed to get kernel base\n");
+  uint64_t kbase = get_kernel_base();
+  if (!kbase) {
+    puts("❌ Couldn’t find kernel base");
     kextrw_deinit();
     return 1;
   }
-
-  printf("Kernel base: 0x%llx\n", kernelBase);
-
-  uint64_t pc = SUB_THREAD_SET_STATE_INTERNAL +
-                SUB_THREAD_SET_STATE_INTERNAL_TBNZ_ENTITLEMENT_CHECK_OFFSET;
-
-  uint32_t orig_instruction = kread32(pc);
+  printf("🍦 Kernel base: 0x%llx\n", kbase);
 
   csh handle;
-  cs_insn *insn;
-  size_t count;
-
   if (cs_open(CS_ARCH_ARM64, CS_MODE_ARM, &handle) != CS_ERR_OK) {
-    printf("Failed to initialize Capstone\n");
+    puts("❌ Capstone init failed");
     kextrw_deinit();
     return 1;
   }
+  cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON);
 
-  count = cs_disasm(handle, (uint8_t *)&orig_instruction, 4, pc, 1, &insn);
+  bool ok1 = patch_tbnz_to_nop(handle, SUB_THREAD_SET_STATE_INTERNAL +
+                                           OFFSET_TBNZ_ENTITLEMENT_CHECK);
+  bool ok2 = patch_tbz_to_b(handle, SUB_THREAD_SET_STATE_INTERNAL +
+                                        OFFSET_TBZ_THREAD_FLAG);
 
-  if (count > 0) {
-    // Extract the target address from the operand
-    const char *mnemonic = insn[0].mnemonic; // Should be "tbz"
-    if (strcmp(mnemonic, "tbnz") != 0) {
-      printf("Expected 'tbnz' instruction, found '%s'\n", mnemonic);
-      cs_free(insn, count);
-      cs_close(&handle);
-      kextrw_deinit();
-      return 1;
-    }
-
-    uint32_t new_instruction = 0xD503201F; // NOP instruction
-
-    printf("Original instruction: 0x%08x\n", orig_instruction);
-    printf("New instruction: 0x%08x\n", new_instruction);
-
-    printf("Now patching... If the process hangs, you need to disable SIP "
-           "in recovery mode\n");
-
-    kwrite32(pc, new_instruction);
-
-    // Verify the patch
-    uint32_t patched_instruction = kread32(pc);
-    if (patched_instruction != new_instruction) {
-      printf("Failed to patch instruction at 0x%llx: expected 0x%08x, got "
-             "0x%08x\n",
-             pc, new_instruction, patched_instruction);
-      cs_free(insn, count);
-      cs_close(&handle);
-      kextrw_deinit();
-      return 1;
-    }
-
-    printf("Successfully patched instruction at 0x%llx\n", pc);
-
-    cs_free(insn, count);
-    cs_close(&handle);
-  } else {
-    printf("Failed to disassemble instruction\n");
-    cs_close(&handle);
-    kextrw_deinit();
-    return 1;
-  }
-
+  cs_close(&handle);
   kextrw_deinit();
-  return 0;
+
+  if (ok1 && ok2) {
+    puts("🎉 All patches applied successfully!");
+    return 0;
+  }
+  puts("💔 One or more patches failed.");
+  return 1;
 }
