@@ -1,4 +1,4 @@
-// for macOS 25A5295e
+// for macOS 24D70
 
 #include <capstone.h>
 #include <libkextrw.h>
@@ -6,8 +6,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#define SUB_THREAD_SET_STATE_INTERNAL kslide(0xFFFFFE0008859D2C)
-#define SUB_THREAD_SET_STATE_INTERNAL_TBNZ_ENTITLEMENT_CHECK_OFFSET 0x44
+#define SUB_THREAD_SET_STATE_INTERNAL kslide(0xFFFFFE00087C1548)
+#define SUB_THREAD_SET_STATE_INTERNAL_TBZ_ENTITLEMENT_CHECK_OFFSET 0x40
 
 int main(void) {
 
@@ -38,7 +38,7 @@ int main(void) {
   printf("Kernel base: 0x%llx\n", kernelBase);
 
   uint64_t pc = SUB_THREAD_SET_STATE_INTERNAL +
-                SUB_THREAD_SET_STATE_INTERNAL_TBNZ_ENTITLEMENT_CHECK_OFFSET;
+                SUB_THREAD_SET_STATE_INTERNAL_TBZ_ENTITLEMENT_CHECK_OFFSET;
 
   uint32_t orig_instruction = kread32(pc);
 
@@ -57,21 +57,59 @@ int main(void) {
   if (count > 0) {
     // Extract the target address from the operand
     const char *mnemonic = insn[0].mnemonic; // Should be "tbz"
-    if (strcmp(mnemonic, "tbnz") != 0) {
-      printf("Expected 'tbnz' instruction, found '%s'\n", mnemonic);
+    if (strcmp(mnemonic, "tbz") != 0) {
+      printf("Expected 'tbz' instruction, found '%s'\n", mnemonic);
       cs_free(insn, count);
       cs_close(&handle);
       kextrw_deinit();
       return 1;
     }
 
-    uint32_t new_instruction = 0xD503201F; // NOP instruction
+    // Parse operands to get the target address
+    const char *op_str = insn[0].op_str; // Example: "w6, #9, #0x16d9eeee4"
+    printf("Disassembled instruction: %s\t%s\n", mnemonic, op_str);
+
+    // Extract target address using sscanf
+    char reg_name[16];
+    int bit_number;
+    uint64_t target_address = 0;
+
+    int num_parsed = sscanf(op_str, "%[^,], #%d, #0x%llx", reg_name,
+                            &bit_number, &target_address);
+
+    if (num_parsed != 3) {
+      printf("Failed to parse operands: '%s'\n", op_str);
+      cs_free(insn, count);
+      cs_close(&handle);
+      kextrw_deinit();
+      return 1;
+    }
+
+    printf("Parsed operands: reg=%s, bit=%d, target=0x%llx\n", reg_name,
+           bit_number, target_address);
+
+    // Compute the offset for the B instruction
+    int64_t offset = target_address - pc;
+
+    // Ensure offset is word-aligned
+    if (offset % 4 != 0) {
+      printf("Error: target address is not word-aligned\n");
+      cs_free(insn, count);
+      cs_close(&handle);
+      kextrw_deinit();
+      return 1;
+    }
+
+    int32_t imm26 = (offset >> 2) & 0x03FFFFFF;
+
+    uint32_t B_opcode = 0b000101;
+    uint32_t new_instruction = (B_opcode << 26) | (imm26 & 0x03FFFFFF);
 
     printf("Original instruction: 0x%08x\n", orig_instruction);
     printf("New instruction: 0x%08x\n", new_instruction);
 
     printf("Now patching... If the process hangs, you need to disable SIP "
-           "in recovery mode\n");
+           "in recovery mode");
 
     kwrite32(pc, new_instruction);
 
