@@ -1,4 +1,4 @@
-// for macOS 25A5306g
+// for macOS 25A5295e
 
 #include <capstone.h>
 #include <libkextrw.h>
@@ -8,11 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
-// base FFFFFE0008869F9C
-// tbnz FFFFFE0008869FE0
-// tbz FFFFFE0008869FE8
-
-#define SUB_THREAD_SET_STATE_INTERNAL kslide(0xFFFFFE0008869F9C)
+#define SUB_THREAD_SET_STATE_INTERNAL kslide(0xFFFFFE0008859D2C)
 #define OFFSET_TBNZ_ENTITLEMENT_CHECK 0x44 /* TBNZ  W6,#9  */
 #define OFFSET_TBZ_THREAD_FLAG 0x4C        /* TBZ   W8,#31 */
 
@@ -106,8 +102,7 @@ int main(void) {
     kextrw_deinit();
     return 1;
   }
-
-  printf("🍦 Kernel base: 0x%llx (slide: 0x%llx)\n", kbase, gKernelSlide);
+  printf("🍦 Kernel base: 0x%llx\n", kbase);
 
   csh handle;
   if (cs_open(CS_ARCH_ARM64, CS_MODE_ARM, &handle) != CS_ERR_OK) {
