@@ -1,4 +1,4 @@
-// for macOS 25A5316i
+// for macOS 25A5306g
 
 #include <capstone.h>
 #include <libkextrw.h>
@@ -8,11 +8,11 @@
 #include <stdio.h>
 #include <string.h>
 
-// base FFFFFE000886DFEC
-// tbnz FFFFFE000886E030
-// tbz FFFFFE000886E038
+// base FFFFFE0008869F9C
+// tbnz FFFFFE0008869FE0
+// tbz FFFFFE0008869FE8
 
-#define SUB_THREAD_SET_STATE_INTERNAL kslide(0xFFFFFE000886DFEC)
+#define SUB_THREAD_SET_STATE_INTERNAL kslide(0xFFFFFE0008869F9C)
 #define OFFSET_TBNZ_ENTITLEMENT_CHECK 0x44 /* TBNZ  W6,#9  */
 #define OFFSET_TBZ_THREAD_FLAG 0x4C        /* TBZ   W8,#31 */
 
